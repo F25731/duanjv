@@ -13,8 +13,12 @@ services:
       DISPLAY: ":99"
       PW_CHROMIUM_NO_SANDBOX: "1"
       NOVNC_PORT: "6080"
+      API_HOST: "0.0.0.0"
+      API_PORT: "8000"
+      DUANJV_API_KEY: "${DUANJV_API_KEY:-}"
       XVFB_WHD: "1920x1080x24"
     ports:
+      - "8000:8000"
       - "6080:6080"
     volumes:
       - ./config.json:/app/config.json

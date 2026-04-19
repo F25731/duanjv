@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .venv/
 config.json
+.env
 browser_profile/
 output/
 playwright_state.json

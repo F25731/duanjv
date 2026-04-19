@@ -7,7 +7,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from playwright.sync_api import (
     BrowserContext,
@@ -935,13 +935,18 @@ def run_login(config: Dict[str, Any], base_dir: Path, force_headless: bool, over
     return 0
 
 
-def run_extract(
+def perform_extraction(
     config: Dict[str, Any],
     base_dir: Path,
     force_headless: bool,
     cli_keywords: Sequence[str],
     cli_limit: Optional[int],
-) -> int:
+    progress: Optional[Callable[[str], None]] = None,
+) -> Dict[str, Any]:
+    def emit(message: str) -> None:
+        if progress:
+            progress(message)
+
     doc_url = config.get("doc_url")
     if not doc_url:
         raise ValueError("doc_url is missing in config.")
@@ -955,11 +960,11 @@ def run_extract(
 
     selectors = config.get("selectors", {})
     search_wait_ms = int(config.get("search_wait_ms", 1200))
-    after_view_wait_ms = int(config.get("after_view_wait_ms", 1200))
     max_rows_per_keyword = int(cli_limit or config.get("max_rows_per_keyword", 500))
     quark_domains = config.get("quark_domains", ["pan.quark.cn"])
 
     rows: List[Dict[str, Any]] = []
+
     with sync_playwright() as playwright:
         context = launch_persistent_context(playwright, config, base_dir, force_headless)
         page = context.pages[0] if context.pages else context.new_page()
@@ -974,36 +979,31 @@ def run_extract(
             )
 
         for keyword in keywords:
-            print("Searching keyword:", keyword)
+            emit("Searching keyword: {}".format(keyword))
             try:
                 fill_search_keyword(page, selectors, keyword, search_wait_ms)
             except Exception as exc:
                 screenshot_path, html_path = write_debug_snapshot(
                     page, output_dir, "search_failed_{}".format(keyword)
                 )
-                print(
+                emit(
                     "Search failed for keyword {}. Debug files: {}, {}. Error: {}".format(
                         keyword, screenshot_path, html_path, exc
-                    ),
-                    file=sys.stderr,
+                    )
                 )
                 continue
 
             if global_find_has_no_data(page):
+                emit("No results for keyword: {}".format(keyword))
                 continue
 
             _current_index, total_matches = global_find_match_counts(page)
             search_results = collect_global_find_results(page)
             if total_matches <= 0 or not search_results:
-                print("No usable results collected for keyword:", keyword)
+                emit("No usable results collected for keyword: {}".format(keyword))
                 continue
 
-            print(
-                "Matched:",
-                total_matches,
-                "Collected:",
-                len(search_results),
-            )
+            emit("Matched: {} Collected: {}".format(total_matches, len(search_results)))
 
             hard_limit = min(len(search_results), max_rows_per_keyword)
             keyword_row_count = 0
@@ -1029,7 +1029,7 @@ def run_extract(
                     screenshot_path, html_path = write_debug_snapshot(
                         page, output_dir, "record_read_failed_{}_{}".format(keyword, record_id)
                     )
-                    print(
+                    emit(
                         "Record read failed for keyword {} record {} ({}). Debug files: {}, {}. Error: {}".format(
                             keyword,
                             record_id,
@@ -1037,8 +1037,7 @@ def run_extract(
                             screenshot_path,
                             html_path,
                             read_error,
-                        ),
-                        file=sys.stderr,
+                        )
                     )
                     continue
 
@@ -1061,7 +1060,7 @@ def run_extract(
                     screenshot_path, html_path = write_debug_snapshot(
                         page, output_dir, "record_link_missing_{}_{}".format(keyword, record_id)
                     )
-                    print(
+                    emit(
                         "No Quark link found for keyword {} record {} ({} / {}). Debug files: {}, {}. Last error: {}".format(
                             keyword,
                             actual_record_id,
@@ -1070,8 +1069,7 @@ def run_extract(
                             screenshot_path,
                             html_path,
                             read_error,
-                        ),
-                        file=sys.stderr,
+                        )
                     )
                     continue
 
@@ -1090,7 +1088,7 @@ def run_extract(
                         }
                     )
 
-            print(
+            emit(
                 "Extracted links for keyword {}: {} rows from {} matched results".format(
                     keyword,
                     keyword_row_count,
@@ -1102,10 +1100,35 @@ def run_extract(
         context.close()
 
     json_path, csv_path = save_results(output_dir, rows)
+    return {
+        "rows": rows,
+        "json_path": json_path,
+        "csv_path": csv_path,
+        "row_count": len(rows),
+        "keywords": list(keywords),
+        "output_dir": output_dir,
+    }
+
+
+def run_extract(
+    config: Dict[str, Any],
+    base_dir: Path,
+    force_headless: bool,
+    cli_keywords: Sequence[str],
+    cli_limit: Optional[int],
+) -> int:
+    result = perform_extraction(
+        config=config,
+        base_dir=base_dir,
+        force_headless=force_headless,
+        cli_keywords=cli_keywords,
+        cli_limit=cli_limit,
+        progress=print,
+    )
     print("Done.")
-    print("JSON:", json_path)
-    print("CSV:", csv_path)
-    print("Rows:", len(rows))
+    print("JSON:", result["json_path"])
+    print("CSV:", result["csv_path"])
+    print("Rows:", result["row_count"])
     return 0
 
 

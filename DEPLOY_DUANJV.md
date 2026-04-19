@@ -12,19 +12,23 @@ This project is deployed as a Docker Compose service named `duanjv`.
 ## Port usage
 
 - `6080`: noVNC desktop used for manual scan login
-- No HTTP API port is exposed yet
+- `8000`: HTTP API endpoint
 
-At the current stage, `duanjv` is still a containerized CLI worker, not an HTTP service.
+At the current stage, `duanjv` exposes both:
+
+- a CLI entrypoint you can still run with `docker compose exec`
+- an HTTP API that can be called by IP and port
 
 That means:
 
 - You run extraction commands with `docker compose exec`.
-- If you later want AstrBot to call it directly, the next step is to wrap it as an HTTP API and then expose a port such as `8000`.
+- You can also call the extractor directly over `http://server-ip:8000`.
 
 ## Files used by the container
 
 - `config.json`: runtime config, mounted into the container
 - `keywords.txt`: runtime keyword list, mounted into the container
+- `.env`: optional Compose environment file for `DUANJV_API_KEY`
 - `browser_profile/`: persistent Chromium login profile
 - `output/`: extraction outputs
 - `playwright_state.json`: exported Playwright auth state
@@ -64,6 +68,36 @@ Batch from `keywords.txt`:
 
 ```bash
 docker compose exec duanjv python main.py extract --config config.json
+```
+
+## Call the HTTP API
+
+Health check:
+
+```bash
+curl http://your-server-ip:8000/health
+```
+
+Extract one keyword:
+
+```bash
+curl -X POST "http://your-server-ip:8000/extract" \
+  -H "Content-Type: application/json" \
+  -d '{"keyword":"夫君"}'
+```
+
+Extract multiple keywords:
+
+```bash
+curl -X POST "http://your-server-ip:8000/extract" \
+  -H "Content-Type: application/json" \
+  -d '{"keywords":["夫君","少主"]}'
+```
+
+If you set `DUANJV_API_KEY` in Compose, add:
+
+```bash
+-H "x-api-key: your-api-key"
 ```
 
 ## View output

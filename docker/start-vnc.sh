@@ -5,6 +5,8 @@ DISPLAY_VALUE="${DISPLAY:-:99}"
 XVFB_WHD="${XVFB_WHD:-1920x1080x24}"
 VNC_PORT="${VNC_PORT:-5900}"
 NOVNC_PORT="${NOVNC_PORT:-6080}"
+API_HOST="${API_HOST:-0.0.0.0}"
+API_PORT="${API_PORT:-8000}"
 
 mkdir -p /tmp/.X11-unix /var/log/duanjv
 rm -f /tmp/.X99-lock
@@ -28,5 +30,6 @@ x11vnc \
 
 echo "duanjv desktop is ready."
 echo "Open: http://<server-ip>:${NOVNC_PORT}/vnc.html?autoconnect=1&resize=scale"
+echo "duanjv api is starting on http://${API_HOST}:${API_PORT}"
 
-exec tail -f /dev/null
+exec uvicorn server:app --host "${API_HOST}" --port "${API_PORT}"

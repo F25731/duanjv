@@ -89,6 +89,38 @@ docker compose exec duanjv python main.py login --config config.json
 
 The Playwright browser window will appear in the noVNC page, and you can complete the WeChat scan login there.
 
+## HTTP API
+
+When the Docker container is running, the API is exposed on port `8000`.
+
+Health check:
+
+```bash
+curl http://your-server-ip:8000/health
+```
+
+Extract a single keyword:
+
+```bash
+curl -X POST "http://your-server-ip:8000/extract" \
+  -H "Content-Type: application/json" \
+  -d '{"keyword":"夫君"}'
+```
+
+Extract multiple keywords:
+
+```bash
+curl -X POST "http://your-server-ip:8000/extract" \
+  -H "Content-Type: application/json" \
+  -d '{"keywords":["夫君","少主"]}'
+```
+
+If you set `DUANJV_API_KEY`, add:
+
+```bash
+-H "x-api-key: your-api-key"
+```
+
 ## If the page structure is different
 
 KDocs pages are dynamic, so you may need to adjust the selectors in `config.json`.
