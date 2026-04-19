@@ -1,0 +1,18 @@
+services:
+  duanjv:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: duanjv
+    restart: unless-stopped
+    working_dir: /app
+    command: ["sleep", "infinity"]
+    shm_size: "1gb"
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./config.json:/app/config.json
+      - ./keywords.txt:/app/keywords.txt
+      - ./browser_profile:/app/browser_profile
+      - ./output:/app/output
+      - ./playwright_state.json:/app/playwright_state.json

@@ -1,0 +1,40 @@
+{
+  "doc_url": "https://www.kdocs.cn/l/cawB2PIrZPaq?R=L1MvMQ==",
+  "keywords_file": "keywords.txt",
+  "keywords": [],
+  "headless": false,
+  "browser_profile_dir": "browser_profile",
+  "output_dir": "output",
+  "storage_state_path": "playwright_state.json",
+  "search_wait_ms": 1200,
+  "after_view_wait_ms": 800,
+  "max_rows_per_keyword": 500,
+  "quark_domains": [
+    "pan.quark.cn"
+  ],
+  "selectors": {
+    "search_button_names": [
+      "\u67e5\u627e",
+      "\u641c\u7d22"
+    ],
+    "search_input_placeholders": [
+      "\u67e5\u627e",
+      "\u641c\u7d22",
+      "\u8bf7\u8f93\u5165\u5173\u952e\u8bcd"
+    ],
+    "search_input_selectors": [
+      "input[placeholder*='\\u67e5\\u627e']",
+      "input[placeholder*='\\u641c\\u7d22']",
+      "input[type='search']"
+    ],
+    "view_button_names": [
+      "\u67e5\u770b"
+    ],
+    "close_button_names": [
+      "\u5173\u95ed",
+      "\u8fd4\u56de",
+      "\u53d6\u6d88",
+      "\u6536\u8d77"
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+config.json
+browser_profile/
+output/
+playwright_state.json
