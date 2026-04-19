@@ -848,10 +848,19 @@ def maybe_click_view_and_collect(
     return links
 
 
-def save_results(output_dir: Path, rows: List[Dict[str, Any]]) -> Tuple[Path, Path]:
+def save_results(
+    output_dir: Path,
+    rows: List[Dict[str, Any]],
+    output_prefix: Optional[str] = None,
+) -> Tuple[Path, Path]:
     ensure_dir(output_dir)
-    json_path = output_dir / "results.json"
-    csv_path = output_dir / "results.csv"
+    if output_prefix:
+        safe_prefix = slugify(output_prefix)
+        json_path = output_dir / "{}.json".format(safe_prefix)
+        csv_path = output_dir / "{}.csv".format(safe_prefix)
+    else:
+        json_path = output_dir / "results.json"
+        csv_path = output_dir / "results.csv"
 
     json_path.write_text(
         json.dumps(rows, ensure_ascii=False, indent=2),
@@ -941,6 +950,7 @@ def perform_extraction(
     force_headless: bool,
     cli_keywords: Sequence[str],
     cli_limit: Optional[int],
+    output_prefix: Optional[str] = None,
     progress: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     def emit(message: str) -> None:
@@ -1099,7 +1109,7 @@ def perform_extraction(
         export_storage_state(context, config, base_dir)
         context.close()
 
-    json_path, csv_path = save_results(output_dir, rows)
+    json_path, csv_path = save_results(output_dir, rows, output_prefix=output_prefix)
     return {
         "rows": rows,
         "json_path": json_path,

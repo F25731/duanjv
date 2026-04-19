@@ -1,7 +1,9 @@
 import os
 import threading
+import time
 from pathlib import Path
 from typing import List, Optional
+from uuid import uuid4
 
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
@@ -14,7 +16,7 @@ CONFIG_PATH = Path(os.environ.get("DUANJV_CONFIG", APP_ROOT / "config.json")).re
 API_KEY = os.environ.get("DUANJV_API_KEY", "").strip()
 EXTRACT_LOCK = threading.Lock()
 
-app = FastAPI(title="duanjv", version="1.0.0")
+app = FastAPI(title="duanjv", version="1.1.0")
 
 
 class ExtractRequest(BaseModel):
@@ -30,6 +32,24 @@ def require_api_key(x_api_key: Optional[str]) -> None:
         return
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="invalid api key")
+
+
+def cleanup_output_files(paths: List[Path], delay_seconds: float = 3.0) -> None:
+    time.sleep(max(delay_seconds, 0.0))
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def schedule_output_cleanup(paths: List[Path], delay_seconds: float = 3.0) -> None:
+    thread = threading.Thread(
+        target=cleanup_output_files,
+        args=(paths, delay_seconds),
+        daemon=True,
+    )
+    thread.start()
 
 
 @app.get("/health")
@@ -64,6 +84,8 @@ def extract(payload: ExtractRequest, x_api_key: Optional[str] = Header(default=N
     def progress(message: str) -> None:
         progress_lines.append(message)
 
+    output_prefix = "api_{}".format(uuid4().hex)
+
     with EXTRACT_LOCK:
         try:
             result = main.perform_extraction(
@@ -72,6 +94,7 @@ def extract(payload: ExtractRequest, x_api_key: Optional[str] = Header(default=N
                 force_headless=payload.headless,
                 cli_keywords=cli_keywords,
                 cli_limit=payload.limit,
+                output_prefix=output_prefix,
                 progress=progress,
             )
         except Exception as exc:
@@ -83,12 +106,16 @@ def extract(payload: ExtractRequest, x_api_key: Optional[str] = Header(default=N
                 },
             ) from exc
 
+    json_path = Path(result["json_path"])
+    csv_path = Path(result["csv_path"])
+    schedule_output_cleanup([json_path, csv_path], delay_seconds=3.0)
+
     response = {
         "ok": True,
         "keywords": result["keywords"],
         "row_count": result["row_count"],
-        "json_path": str(result["json_path"]),
-        "csv_path": str(result["csv_path"]),
+        "json_path": str(json_path),
+        "csv_path": str(csv_path),
         "progress": progress_lines,
     }
     if payload.include_rows:
