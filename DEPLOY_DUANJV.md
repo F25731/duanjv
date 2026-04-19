@@ -5,16 +5,19 @@ This project is deployed as a Docker Compose service named `duanjv`.
 ## What this deployment does
 
 - Builds a dedicated Python + Playwright image.
-- Keeps one long-running container alive for manual commands.
+- Starts a long-running container with a virtual desktop.
 - Persists the browser profile, exported state, and extraction results on the host.
+- Exposes a temporary noVNC web desktop on port `6080` for first-time login.
 
-## Important limitation
+## Port usage
 
-At the current stage, `duanjv` is a containerized CLI worker, not an HTTP service.
+- `6080`: noVNC desktop used for manual scan login
+- No HTTP API port is exposed yet
+
+At the current stage, `duanjv` is still a containerized CLI worker, not an HTTP service.
 
 That means:
 
-- No container port needs to be exposed yet.
 - You run extraction commands with `docker compose exec`.
 - If you later want AstrBot to call it directly, the next step is to wrap it as an HTTP API and then expose a port such as `8000`.
 
@@ -32,6 +35,22 @@ That means:
 docker compose build duanjv
 docker compose up -d duanjv
 ```
+
+## First-time login
+
+Open the remote desktop in your browser:
+
+```text
+http://your-server-ip:6080/vnc.html?autoconnect=1&resize=scale
+```
+
+Then run:
+
+```bash
+docker compose exec duanjv python main.py login --config config.json
+```
+
+The browser window will appear in the noVNC desktop. Complete the WeChat scan there, then press Enter in the terminal where the login command is running.
 
 ## Run extraction
 
@@ -56,10 +75,4 @@ docker compose exec duanjv python main.py extract --config config.json
 
 The current project uses WeChat scan login and stores the session in `browser_profile/`.
 
-If you deploy to a headless Linux server, you still need a way to complete the first scan login in that Linux runtime. The current Compose setup does not include a remote desktop or noVNC viewer yet.
-
-So for server deployment, treat this as:
-
-1. Build and run the container.
-2. Prepare the runtime files and persisted directories.
-3. Later add a visible login path for the first scan if needed.
+The current Compose setup now includes a remote desktop path through noVNC, so you can complete the first scan login inside the Linux container runtime and keep the session on disk.

@@ -6,10 +6,16 @@ services:
     container_name: duanjv
     restart: unless-stopped
     working_dir: /app
-    command: ["sleep", "infinity"]
     shm_size: "1gb"
     stdin_open: true
     tty: true
+    environment:
+      DISPLAY: ":99"
+      PW_CHROMIUM_NO_SANDBOX: "1"
+      NOVNC_PORT: "6080"
+      XVFB_WHD: "1920x1080x24"
+    ports:
+      - "6080:6080"
     volumes:
       - ./config.json:/app/config.json
       - ./keywords.txt:/app/keywords.txt

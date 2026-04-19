@@ -71,6 +71,24 @@ The script will write:
 - `output/results.csv`
 - debug screenshots and html snapshots when a step fails
 
+## Remote Login In Docker
+
+If you deploy this project to a Linux server with Docker Compose, the container can expose a temporary noVNC desktop on port `6080`.
+
+After the container starts, open:
+
+```text
+http://your-server-ip:6080/vnc.html?autoconnect=1&resize=scale
+```
+
+Then run inside the container:
+
+```bash
+docker compose exec duanjv python main.py login --config config.json
+```
+
+The Playwright browser window will appear in the noVNC page, and you can complete the WeChat scan login there.
+
 ## If the page structure is different
 
 KDocs pages are dynamic, so you may need to adjust the selectors in `config.json`.
@@ -92,4 +110,5 @@ python main.py login --config config.json --headless
 
 - This script uses the document `查找` panel rather than the left sidebar `搜索`.
 - The table itself is canvas-rendered, so the extractor reads records through `WPSOpenApi`, which is much more stable than trying to click canvas cells.
+- In Docker, Chromium runs with `--no-sandbox` when `PW_CHROMIUM_NO_SANDBOX=1` is set by Compose.
 - If a run fails, check the files in `output/` first.

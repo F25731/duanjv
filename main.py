@@ -1,6 +1,7 @@
 import argparse
 import csv
 import json
+import os
 import re
 import sys
 import time
@@ -877,6 +878,22 @@ def save_results(output_dir: Path, rows: List[Dict[str, Any]]) -> Tuple[Path, Pa
     return json_path, csv_path
 
 
+def browser_launch_args(config: Dict[str, Any]) -> List[str]:
+    args = ["--window-size=1800,1100", "--force-device-scale-factor=0.8"]
+
+    for value in config.get("browser_args", []):
+        arg = str(value).strip()
+        if arg and arg not in args:
+            args.append(arg)
+
+    if os.environ.get("PW_CHROMIUM_NO_SANDBOX") == "1":
+        for arg in ("--no-sandbox", "--disable-setuid-sandbox"):
+            if arg not in args:
+                args.append(arg)
+
+    return args
+
+
 def launch_persistent_context(playwright, config: Dict[str, Any], base_dir: Path, force_headless: bool) -> BrowserContext:
     profile_dir = resolve_path(base_dir, str(config.get("browser_profile_dir", "browser_profile")))
     ensure_dir(profile_dir)
@@ -885,7 +902,7 @@ def launch_persistent_context(playwright, config: Dict[str, Any], base_dir: Path
         headless=bool(config.get("headless", False) or force_headless),
         accept_downloads=True,
         viewport={"width": 1800, "height": 1100},
-        args=["--window-size=1800,1100", "--force-device-scale-factor=0.8"],
+        args=browser_launch_args(config),
     )
 
 
