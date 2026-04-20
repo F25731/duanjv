@@ -259,6 +259,121 @@ def top_toolbar_find_button(page: Page) -> Optional[Locator]:
     return first_clickable_button_by_names(page, ["查找"])
 
 
+def page_has_wps_api(page: Page) -> bool:
+    try:
+        return bool(
+            page.evaluate(
+                "() => Boolean(window.WPSOpenApi && window.WPSOpenApi.Application)"
+            )
+        )
+    except Exception:
+        return False
+
+
+def same_document_url(current_url: str, doc_url: str) -> bool:
+    current = str(current_url or "").strip()
+    target = str(doc_url or "").strip()
+    if not current or not target:
+        return False
+    if current == target:
+        return True
+    return current.split("?", 1)[0] == target.split("?", 1)[0]
+
+
+def describe_page_state(page: Page, selectors: Dict[str, Any]) -> str:
+    try:
+        title = normalize_text(page.title())
+    except Exception:
+        title = ""
+
+    current_url = str(getattr(page, "url", "") or "").strip()
+    has_modal_input = bool(global_find_input(page))
+    has_find_button = bool(
+        top_toolbar_find_button(page)
+        or first_clickable_button_by_names(
+            page, selectors.get("search_button_names", ["鏌ユ壘", "鎼滅储"])
+        )
+    )
+    return (
+        "url={!r}, title={!r}, login_page={}, wps_api={}, find_button={}, find_input={}".format(
+            current_url,
+            title,
+            is_login_page(page),
+            page_has_wps_api(page),
+            has_find_button,
+            has_modal_input,
+        )
+    )
+
+
+def wait_for_document_ready(
+    page: Page,
+    selectors: Dict[str, Any],
+    timeout_ms: int = 15000,
+    poll_ms: int = 300,
+) -> None:
+    deadline = time.time() + max(timeout_ms, 0) / 1000.0
+    last_state = ""
+
+    while time.time() < deadline:
+        if is_login_page(page):
+            raise RuntimeError("The current page is the login page.")
+
+        has_modal_input = bool(global_find_input(page))
+        has_find_button = bool(
+            top_toolbar_find_button(page)
+            or first_clickable_button_by_names(
+                page, selectors.get("search_button_names", ["鏌ユ壘", "鎼滅储"])
+            )
+        )
+        if has_modal_input or has_find_button:
+            return
+
+        last_state = describe_page_state(page, selectors)
+        wait_ms(poll_ms)
+
+    raise RuntimeError(
+        "Document page did not become ready within {} ms. {}".format(
+            timeout_ms,
+            last_state or describe_page_state(page, selectors),
+        )
+    )
+
+
+def ensure_document_page_ready(
+    page: Page,
+    doc_url: str,
+    selectors: Dict[str, Any],
+    ready_timeout_ms: int = 15000,
+) -> None:
+    attempts: List[str] = []
+
+    if not same_document_url(page.url, doc_url):
+        page.goto(doc_url, wait_until="domcontentloaded")
+
+    try:
+        wait_for_document_ready(page, selectors, timeout_ms=ready_timeout_ms)
+        return
+    except Exception as exc:
+        attempts.append("initial wait failed: {}".format(exc))
+
+    try:
+        page.reload(wait_until="domcontentloaded")
+        wait_for_document_ready(page, selectors, timeout_ms=ready_timeout_ms)
+        return
+    except Exception as exc:
+        attempts.append("reload failed: {}".format(exc))
+
+    page.goto(doc_url, wait_until="domcontentloaded")
+    try:
+        wait_for_document_ready(page, selectors, timeout_ms=ready_timeout_ms)
+        return
+    except Exception as exc:
+        attempts.append("goto failed: {}".format(exc))
+
+    raise RuntimeError(" | ".join(attempts))
+
+
 def visible_global_find_modal(page: Page) -> Optional[Locator]:
     return first_visible(page.locator(".db-global-find-modal-panel"))
 
@@ -672,8 +787,47 @@ def open_search_if_needed(page: Page, selectors: Dict[str, Any]) -> Locator:
     return search_input
 
 
+def open_search_if_needed_resilient(
+    page: Page,
+    selectors: Dict[str, Any],
+    timeout_ms: int = 10000,
+) -> Locator:
+    deadline = time.time() + max(timeout_ms, 0) / 1000.0
+    click_attempts = 0
+    last_state = ""
+
+    while time.time() < deadline:
+        search_input = global_find_input(page)
+        if search_input:
+            return search_input
+
+        search_button = top_toolbar_find_button(page)
+        if not search_button:
+            search_button = first_clickable_button_by_names(
+                page, selectors.get("search_button_names", ["鏌ユ壘", "鎼滅储"])
+            )
+        if search_button and click_attempts < 2:
+            click_attempts += 1
+            search_button.click()
+            wait_ms(600)
+            continue
+
+        search_input = best_fallback_search_input(page, selectors)
+        if search_input:
+            return search_input
+
+        last_state = describe_page_state(page, selectors)
+        wait_ms(300)
+
+    raise RuntimeError(
+        "Could not find the page's 鏌ユ壘/鎼滅储 button. {}".format(
+            last_state or describe_page_state(page, selectors)
+        )
+    )
+
+
 def fill_search_keyword(page: Page, selectors: Dict[str, Any], keyword: str, wait_after_ms: int) -> None:
-    search_input = open_search_if_needed(page, selectors)
+    search_input = open_search_if_needed_resilient(page, selectors)
     search_input.click()
     try:
         search_input.fill("")
@@ -944,10 +1098,11 @@ def run_login(config: Dict[str, Any], base_dir: Path, force_headless: bool, over
     return 0
 
 
-def perform_extraction(
+def perform_extraction_with_page(
     config: Dict[str, Any],
     base_dir: Path,
-    force_headless: bool,
+    context: BrowserContext,
+    page: Page,
     cli_keywords: Sequence[str],
     cli_limit: Optional[int],
     output_prefix: Optional[str] = None,
@@ -970,145 +1125,145 @@ def perform_extraction(
 
     selectors = config.get("selectors", {})
     search_wait_ms = int(config.get("search_wait_ms", 1200))
+    ready_timeout_ms = int(config.get("ready_timeout_ms", 15000))
     max_rows_per_keyword = int(cli_limit or config.get("max_rows_per_keyword", 500))
     quark_domains = config.get("quark_domains", ["pan.quark.cn"])
 
+    ensure_document_page_ready(
+        page,
+        doc_url=str(doc_url),
+        selectors=selectors,
+        ready_timeout_ms=ready_timeout_ms,
+    )
+
+    if is_login_page(page):
+        screenshot_path, html_path = write_debug_snapshot(page, output_dir, "login_required")
+        raise RuntimeError(
+            "The persistent session is not logged in. Run `python main.py login --config config.json` first. "
+            "Debug files: {}, {}".format(screenshot_path, html_path)
+        )
+
     rows: List[Dict[str, Any]] = []
 
-    with sync_playwright() as playwright:
-        context = launch_persistent_context(playwright, config, base_dir, force_headless)
-        page = context.pages[0] if context.pages else context.new_page()
-        page.goto(doc_url, wait_until="domcontentloaded")
-        wait_ms(1000)
-
-        if is_login_page(page):
-            screenshot_path, html_path = write_debug_snapshot(page, output_dir, "login_required")
-            raise RuntimeError(
-                "The persistent session is not logged in. Run `python main.py login --config config.json` first. "
-                "Debug files: {}, {}".format(screenshot_path, html_path)
+    for keyword in keywords:
+        emit("Searching keyword: {}".format(keyword))
+        try:
+            fill_search_keyword(page, selectors, keyword, search_wait_ms)
+        except Exception as exc:
+            screenshot_path, html_path = write_debug_snapshot(
+                page, output_dir, "search_failed_{}".format(keyword)
             )
+            emit(
+                "Search failed for keyword {}. Debug files: {}, {}. Error: {}".format(
+                    keyword, screenshot_path, html_path, exc
+                )
+            )
+            continue
 
-        for keyword in keywords:
-            emit("Searching keyword: {}".format(keyword))
+        if global_find_has_no_data(page):
+            emit("No results for keyword: {}".format(keyword))
+            continue
+
+        _current_index, total_matches = global_find_match_counts(page)
+        search_results = collect_global_find_results(page)
+        if total_matches <= 0 or not search_results:
+            emit("No usable results collected for keyword: {}".format(keyword))
+            continue
+
+        emit("Matched: {} Collected: {}".format(total_matches, len(search_results)))
+
+        hard_limit = min(len(search_results), max_rows_per_keyword)
+        keyword_row_count = 0
+        keyword_match_with_link_count = 0
+
+        for match_index, item in enumerate(search_results[:hard_limit], start=1):
+            record_id = item["record_id"]
+
+            payload: Optional[Dict[str, Any]] = None
+            read_error: Optional[Exception] = None
             try:
-                fill_search_keyword(page, selectors, keyword, search_wait_ms)
+                payload = read_record_by_id(page, record_id)
             except Exception as exc:
-                screenshot_path, html_path = write_debug_snapshot(
-                    page, output_dir, "search_failed_{}".format(keyword)
-                )
-                emit(
-                    "Search failed for keyword {}. Debug files: {}, {}. Error: {}".format(
-                        keyword, screenshot_path, html_path, exc
-                    )
-                )
-                continue
+                read_error = exc
 
-            if global_find_has_no_data(page):
-                emit("No results for keyword: {}".format(keyword))
-                continue
-
-            _current_index, total_matches = global_find_match_counts(page)
-            search_results = collect_global_find_results(page)
-            if total_matches <= 0 or not search_results:
-                emit("No usable results collected for keyword: {}".format(keyword))
-                continue
-
-            emit("Matched: {} Collected: {}".format(total_matches, len(search_results)))
-
-            hard_limit = min(len(search_results), max_rows_per_keyword)
-            keyword_row_count = 0
-            keyword_match_with_link_count = 0
-
-            for match_index, item in enumerate(search_results[:hard_limit], start=1):
-                record_id = item["record_id"]
-
-                payload: Optional[Dict[str, Any]] = None
-                read_error: Optional[Exception] = None
+            if not payload and select_global_find_result(page, item["raw_id"], search_wait_ms):
                 try:
-                    payload = read_record_by_id(page, record_id)
+                    payload = read_current_selected_record(page)
                 except Exception as exc:
                     read_error = exc
 
-                if not payload and select_global_find_result(page, item["raw_id"], search_wait_ms):
-                    try:
-                        payload = read_current_selected_record(page)
-                    except Exception as exc:
-                        read_error = exc
-
-                if not payload:
-                    screenshot_path, html_path = write_debug_snapshot(
-                        page, output_dir, "record_read_failed_{}_{}".format(keyword, record_id)
-                    )
-                    emit(
-                        "Record read failed for keyword {} record {} ({}). Debug files: {}, {}. Error: {}".format(
-                            keyword,
-                            record_id,
-                            item["title"],
-                            screenshot_path,
-                            html_path,
-                            read_error,
-                        )
-                    )
-                    continue
-
-                actual_record_id = str(payload.get("recordId") or record_id)
-                title = item["title"] or extract_record_title_from_payload(payload)
-                links = extract_quark_links_from_record_payload(payload, quark_domains)
-
-                if not links and select_global_find_result(page, item["raw_id"], search_wait_ms):
-                    try:
-                        selected_payload = read_current_selected_record(page)
-                        if selected_payload:
-                            payload = selected_payload
-                            actual_record_id = str(payload.get("recordId") or actual_record_id)
-                            title = item["title"] or extract_record_title_from_payload(payload)
-                            links = extract_quark_links_from_record_payload(payload, quark_domains)
-                    except Exception as exc:
-                        read_error = exc
-
-                if not links:
-                    screenshot_path, html_path = write_debug_snapshot(
-                        page, output_dir, "record_link_missing_{}_{}".format(keyword, record_id)
-                    )
-                    emit(
-                        "No Quark link found for keyword {} record {} ({} / {}). Debug files: {}, {}. Last error: {}".format(
-                            keyword,
-                            actual_record_id,
-                            item["raw_id"],
-                            title,
-                            screenshot_path,
-                            html_path,
-                            read_error,
-                        )
-                    )
-                    continue
-
-                keyword_match_with_link_count += 1
-                for link in links:
-                    keyword_row_count += 1
-                    rows.append(
-                        {
-                            "keyword": keyword,
-                            "match_index": match_index,
-                            "result_raw_id": item["raw_id"],
-                            "record_id": actual_record_id,
-                            "match_context": title,
-                            "quark_url": link,
-                            "source_page_url": page.url,
-                        }
-                    )
-
-            emit(
-                "Extracted links for keyword {}: {} rows from {} matched results".format(
-                    keyword,
-                    keyword_row_count,
-                    keyword_match_with_link_count,
+            if not payload:
+                screenshot_path, html_path = write_debug_snapshot(
+                    page, output_dir, "record_read_failed_{}_{}".format(keyword, record_id)
                 )
+                emit(
+                    "Record read failed for keyword {} record {} ({}). Debug files: {}, {}. Error: {}".format(
+                        keyword,
+                        record_id,
+                        item["title"],
+                        screenshot_path,
+                        html_path,
+                        read_error,
+                    )
+                )
+                continue
+
+            actual_record_id = str(payload.get("recordId") or record_id)
+            title = item["title"] or extract_record_title_from_payload(payload)
+            links = extract_quark_links_from_record_payload(payload, quark_domains)
+
+            if not links and select_global_find_result(page, item["raw_id"], search_wait_ms):
+                try:
+                    selected_payload = read_current_selected_record(page)
+                    if selected_payload:
+                        payload = selected_payload
+                        actual_record_id = str(payload.get("recordId") or actual_record_id)
+                        title = item["title"] or extract_record_title_from_payload(payload)
+                        links = extract_quark_links_from_record_payload(payload, quark_domains)
+                except Exception as exc:
+                    read_error = exc
+
+            if not links:
+                screenshot_path, html_path = write_debug_snapshot(
+                    page, output_dir, "record_link_missing_{}_{}".format(keyword, record_id)
+                )
+                emit(
+                    "No Quark link found for keyword {} record {} ({} / {}). Debug files: {}, {}. Last error: {}".format(
+                        keyword,
+                        actual_record_id,
+                        item["raw_id"],
+                        title,
+                        screenshot_path,
+                        html_path,
+                        read_error,
+                    )
+                )
+                continue
+
+            keyword_match_with_link_count += 1
+            for link in links:
+                keyword_row_count += 1
+                rows.append(
+                    {
+                        "keyword": keyword,
+                        "match_index": match_index,
+                        "result_raw_id": item["raw_id"],
+                        "record_id": actual_record_id,
+                        "match_context": title,
+                        "quark_url": link,
+                        "source_page_url": page.url,
+                    }
+                )
+
+        emit(
+            "Extracted links for keyword {}: {} rows from {} matched results".format(
+                keyword,
+                keyword_row_count,
+                keyword_match_with_link_count,
             )
+        )
 
-        export_storage_state(context, config, base_dir)
-        context.close()
-
+    export_storage_state(context, config, base_dir)
     json_path, csv_path = save_results(output_dir, rows, output_prefix=output_prefix)
     return {
         "rows": rows,
@@ -1118,6 +1273,33 @@ def perform_extraction(
         "keywords": list(keywords),
         "output_dir": output_dir,
     }
+
+
+def perform_extraction(
+    config: Dict[str, Any],
+    base_dir: Path,
+    force_headless: bool,
+    cli_keywords: Sequence[str],
+    cli_limit: Optional[int],
+    output_prefix: Optional[str] = None,
+    progress: Optional[Callable[[str], None]] = None,
+) -> Dict[str, Any]:
+    with sync_playwright() as playwright:
+        context = launch_persistent_context(playwright, config, base_dir, force_headless)
+        page = context.pages[0] if context.pages else context.new_page()
+        try:
+            return perform_extraction_with_page(
+                config=config,
+                base_dir=base_dir,
+                context=context,
+                page=page,
+                cli_keywords=cli_keywords,
+                cli_limit=cli_limit,
+                output_prefix=output_prefix,
+                progress=progress,
+            )
+        finally:
+            context.close()
 
 
 def run_extract(
