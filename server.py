@@ -16,6 +16,8 @@ APP_ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = Path(os.environ.get("DUANJV_CONFIG", APP_ROOT / "config.json")).resolve()
 API_KEY = os.environ.get("DUANJV_API_KEY", "").strip()
 EXTRACT_LOCK = threading.Lock()
+DEFAULT_WORKER_MAX_REQUESTS = 20
+DEFAULT_WORKER_MAX_IDLE_SECONDS = 900
 
 
 def env_int(name: str, default: int) -> int:
@@ -26,10 +28,6 @@ def env_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
-
-
-WORKER_MAX_REQUESTS = max(1, env_int("DUANJV_WORKER_MAX_REQUESTS", 20))
-WORKER_MAX_IDLE_SECONDS = max(60, env_int("DUANJV_WORKER_MAX_IDLE_SECONDS", 900))
 
 app = FastAPI(title="duanjv", version="1.2.0")
 
@@ -87,14 +85,14 @@ class BrowserWorker:
         self._created_at = time.time()
         self._last_used_at = self._created_at
 
-    def _needs_restart(self, force_headless: bool) -> bool:
+    def _needs_restart(self, force_headless: bool, max_requests: int, max_idle_seconds: int) -> bool:
         if self._context is None or self._page is None or self._playwright is None:
             return True
         if self._headless != bool(force_headless):
             return True
-        if self._request_count >= WORKER_MAX_REQUESTS:
+        if self._request_count >= max_requests:
             return True
-        if self._last_used_at and time.time() - self._last_used_at >= WORKER_MAX_IDLE_SECONDS:
+        if self._last_used_at and time.time() - self._last_used_at >= max_idle_seconds:
             return True
         try:
             if self._page.is_closed():
@@ -103,8 +101,15 @@ class BrowserWorker:
             return True
         return False
 
-    def _ensure_runtime(self, config: dict, base_dir: Path, force_headless: bool) -> None:
-        if self._needs_restart(force_headless):
+    def _ensure_runtime(
+        self,
+        config: dict,
+        base_dir: Path,
+        force_headless: bool,
+        max_requests: int,
+        max_idle_seconds: int,
+    ) -> None:
+        if self._needs_restart(force_headless, max_requests, max_idle_seconds):
             self._start_runtime(config, base_dir, force_headless)
 
     def _run_once(
@@ -112,12 +117,20 @@ class BrowserWorker:
         config: dict,
         base_dir: Path,
         force_headless: bool,
+        max_requests: int,
+        max_idle_seconds: int,
         cli_keywords: List[str],
         cli_limit: Optional[int],
         output_prefix: str,
         progress,
     ) -> dict:
-        self._ensure_runtime(config, base_dir, force_headless)
+        self._ensure_runtime(
+            config,
+            base_dir,
+            force_headless,
+            max_requests,
+            max_idle_seconds,
+        )
         result = main.perform_extraction_with_page(
             config=config,
             base_dir=base_dir,
@@ -138,6 +151,8 @@ class BrowserWorker:
         config: dict,
         base_dir: Path,
         force_headless: bool,
+        max_requests: int,
+        max_idle_seconds: int,
         cli_keywords: List[str],
         cli_limit: Optional[int],
         output_prefix: str,
@@ -148,6 +163,8 @@ class BrowserWorker:
                 config=config,
                 base_dir=base_dir,
                 force_headless=force_headless,
+                max_requests=max_requests,
+                max_idle_seconds=max_idle_seconds,
                 cli_keywords=cli_keywords,
                 cli_limit=cli_limit,
                 output_prefix=output_prefix,
@@ -160,24 +177,46 @@ class BrowserWorker:
                 config=config,
                 base_dir=base_dir,
                 force_headless=force_headless,
+                max_requests=max_requests,
+                max_idle_seconds=max_idle_seconds,
                 cli_keywords=cli_keywords,
                 cli_limit=cli_limit,
                 output_prefix=output_prefix,
                 progress=progress,
             )
 
-    def health(self) -> dict:
+    def health(self, max_requests: int, max_idle_seconds: int) -> dict:
         return {
             "ready": bool(self._context and self._page),
             "headless": self._headless,
             "request_count": self._request_count,
-            "max_requests": WORKER_MAX_REQUESTS,
-            "max_idle_seconds": WORKER_MAX_IDLE_SECONDS,
+            "max_requests": max_requests,
+            "max_idle_seconds": max_idle_seconds,
             "last_used_at": self._last_used_at or None,
         }
 
 
 BROWSER_WORKER = BrowserWorker()
+
+
+def worker_limits_from_config(config: dict) -> tuple[int, int]:
+    max_requests = config.get(
+        "worker_max_requests",
+        env_int("DUANJV_WORKER_MAX_REQUESTS", DEFAULT_WORKER_MAX_REQUESTS),
+    )
+    max_idle_seconds = config.get(
+        "worker_max_idle_seconds",
+        env_int("DUANJV_WORKER_MAX_IDLE_SECONDS", DEFAULT_WORKER_MAX_IDLE_SECONDS),
+    )
+    try:
+        max_requests_value = int(max_requests)
+    except (TypeError, ValueError):
+        max_requests_value = DEFAULT_WORKER_MAX_REQUESTS
+    try:
+        max_idle_value = int(max_idle_seconds)
+    except (TypeError, ValueError):
+        max_idle_value = DEFAULT_WORKER_MAX_IDLE_SECONDS
+    return max(1, max_requests_value), max(60, max_idle_value)
 
 
 def require_api_key(x_api_key: Optional[str]) -> None:
@@ -207,13 +246,15 @@ def schedule_output_cleanup(paths: List[Path], delay_seconds: float = 3.0) -> No
 
 @app.get("/health")
 def health() -> dict:
+    config = main.load_config(CONFIG_PATH) if CONFIG_PATH.exists() else {}
+    max_requests, max_idle_seconds = worker_limits_from_config(config)
     return {
         "ok": True,
         "service": "duanjv",
         "busy": EXTRACT_LOCK.locked(),
         "config_path": str(CONFIG_PATH),
         "api_key_enabled": bool(API_KEY),
-        "worker": BROWSER_WORKER.health(),
+        "worker": BROWSER_WORKER.health(max_requests, max_idle_seconds),
     }
 
 
@@ -233,6 +274,7 @@ def extract(payload: ExtractRequest, x_api_key: Optional[str] = Header(default=N
         raise HTTPException(status_code=500, detail="config.json not found in container")
 
     config = main.load_config(CONFIG_PATH)
+    max_requests, max_idle_seconds = worker_limits_from_config(config)
     progress_lines: List[str] = []
 
     def progress(message: str) -> None:
@@ -246,6 +288,8 @@ def extract(payload: ExtractRequest, x_api_key: Optional[str] = Header(default=N
                 config=config,
                 base_dir=CONFIG_PATH.parent,
                 force_headless=payload.headless,
+                max_requests=max_requests,
+                max_idle_seconds=max_idle_seconds,
                 cli_keywords=cli_keywords,
                 cli_limit=payload.limit,
                 output_prefix=output_prefix,

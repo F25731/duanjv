@@ -9,6 +9,8 @@
   "search_wait_ms": 1200,
   "after_view_wait_ms": 800,
   "max_rows_per_keyword": 500,
+  "worker_max_requests": 20,
+  "worker_max_idle_seconds": 900,
   "quark_domains": [
     "pan.quark.cn"
   ],
