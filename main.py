@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from playwright.sync_api import (
+    Browser,
     BrowserContext,
     Locator,
     Page,
@@ -1069,10 +1070,39 @@ def launch_persistent_context(playwright, config: Dict[str, Any], base_dir: Path
     )
 
 
-def export_storage_state(context: BrowserContext, config: Dict[str, Any], base_dir: Path) -> None:
-    storage_state_path = resolve_path(
-        base_dir, str(config.get("storage_state_path", "playwright_state.json"))
+def storage_state_file(config: Dict[str, Any], base_dir: Path) -> Path:
+    return resolve_path(
+        base_dir,
+        str(config.get("storage_state_path", "playwright_state.json")),
     )
+
+
+def launch_runtime_browser_context(
+    playwright,
+    config: Dict[str, Any],
+    base_dir: Path,
+    force_headless: bool,
+) -> Tuple[Browser, BrowserContext]:
+    storage_state_path = storage_state_file(config, base_dir)
+    launch_kwargs: Dict[str, Any] = {
+        "headless": bool(config.get("headless", False) or force_headless),
+        "args": browser_launch_args(config),
+    }
+    browser = playwright.chromium.launch(**launch_kwargs)
+
+    context_kwargs: Dict[str, Any] = {
+        "accept_downloads": True,
+        "viewport": {"width": 1800, "height": 1100},
+    }
+    if storage_state_path.exists():
+        context_kwargs["storage_state"] = str(storage_state_path)
+
+    context = browser.new_context(**context_kwargs)
+    return browser, context
+
+
+def export_storage_state(context: BrowserContext, config: Dict[str, Any], base_dir: Path) -> None:
+    storage_state_path = storage_state_file(config, base_dir)
     context.storage_state(path=str(storage_state_path))
 
 
@@ -1285,7 +1315,7 @@ def perform_extraction(
     progress: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     with sync_playwright() as playwright:
-        context = launch_persistent_context(playwright, config, base_dir, force_headless)
+        browser, context = launch_runtime_browser_context(playwright, config, base_dir, force_headless)
         page = context.pages[0] if context.pages else context.new_page()
         try:
             return perform_extraction_with_page(
@@ -1299,7 +1329,10 @@ def perform_extraction(
                 progress=progress,
             )
         finally:
-            context.close()
+            try:
+                context.close()
+            finally:
+                browser.close()
 
 
 def run_extract(

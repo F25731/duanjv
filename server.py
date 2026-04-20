@@ -43,6 +43,7 @@ class ExtractRequest(BaseModel):
 class BrowserWorker:
     def __init__(self) -> None:
         self._playwright = None
+        self._browser = None
         self._context = None
         self._page = None
         self._headless: Optional[bool] = None
@@ -58,6 +59,14 @@ class BrowserWorker:
                 pass
         self._context = None
         self._page = None
+
+        if self._browser is not None:
+            try:
+                self._browser.close()
+            except Exception:
+                pass
+        self._browser = None
+
         self._headless = None
         self._request_count = 0
         self._created_at = 0.0
@@ -73,7 +82,7 @@ class BrowserWorker:
     def _start_runtime(self, config: dict, base_dir: Path, force_headless: bool) -> None:
         self._close_runtime()
         self._playwright = sync_playwright().start()
-        self._context = main.launch_persistent_context(
+        self._browser, self._context = main.launch_runtime_browser_context(
             self._playwright,
             config=config,
             base_dir=base_dir,
