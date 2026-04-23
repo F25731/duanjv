@@ -234,6 +234,50 @@ def first_visible(locator: Locator, timeout_ms: int = 500) -> Optional[Locator]:
     return None
 
 
+def locator_accepts_text_input(locator: Locator, timeout_ms: int = 300) -> bool:
+    try:
+        if not locator.is_visible(timeout=timeout_ms):
+            return False
+    except Exception:
+        return False
+
+    try:
+        if not locator.is_enabled(timeout=timeout_ms):
+            return False
+    except Exception:
+        return False
+
+    try:
+        readonly = bool(
+            locator.evaluate(
+                """
+                (el) => Boolean(
+                  el.readOnly ||
+                  el.hasAttribute('readonly') ||
+                  el.getAttribute('aria-disabled') === 'true'
+                )
+                """
+            )
+        )
+    except Exception:
+        readonly = False
+
+    return not readonly
+
+
+def first_visible_enabled(locator: Locator, timeout_ms: int = 500) -> Optional[Locator]:
+    try:
+        count = locator.count()
+    except Exception:
+        return None
+
+    for index in range(count):
+        candidate = locator.nth(index)
+        if locator_accepts_text_input(candidate, timeout_ms=timeout_ms):
+            return candidate
+    return None
+
+
 def first_clickable_button_by_names(page: Page, names: Sequence[str]) -> Optional[Locator]:
     for name in names:
         patterns = [
@@ -289,6 +333,7 @@ def describe_page_state(page: Page, selectors: Dict[str, Any]) -> str:
 
     current_url = str(getattr(page, "url", "") or "").strip()
     has_modal_input = bool(global_find_input(page))
+    has_disabled_modal_input = bool(global_find_input(page, allow_disabled=True)) and not has_modal_input
     has_find_button = bool(
         top_toolbar_find_button(page)
         or first_clickable_button_by_names(
@@ -296,13 +341,14 @@ def describe_page_state(page: Page, selectors: Dict[str, Any]) -> str:
         )
     )
     return (
-        "url={!r}, title={!r}, login_page={}, wps_api={}, find_button={}, find_input={}".format(
+        "url={!r}, title={!r}, login_page={}, wps_api={}, find_button={}, find_input={}, disabled_find_input={}".format(
             current_url,
             title,
             is_login_page(page),
             page_has_wps_api(page),
             has_find_button,
             has_modal_input,
+            has_disabled_modal_input,
         )
     )
 
@@ -379,7 +425,7 @@ def visible_global_find_modal(page: Page) -> Optional[Locator]:
     return first_visible(page.locator(".db-global-find-modal-panel"))
 
 
-def global_find_input(page: Page) -> Optional[Locator]:
+def global_find_input(page: Page, allow_disabled: bool = False) -> Optional[Locator]:
     modal = visible_global_find_modal(page)
     if not modal:
         return None
@@ -392,7 +438,7 @@ def global_find_input(page: Page) -> Optional[Locator]:
         modal.locator("textarea"),
     ]
     for locator in candidates:
-        visible = first_visible(locator)
+        visible = first_visible(locator) if allow_disabled else first_visible_enabled(locator)
         if visible:
             return visible
     return None
@@ -468,6 +514,38 @@ def click_next_search_result(page: Page, wait_after_ms: int) -> bool:
     next_button.click()
     wait_ms(wait_after_ms)
     return True
+
+
+def close_global_find_modal(page: Page, wait_after_ms: int = 400) -> bool:
+    modal = visible_global_find_modal(page)
+    if not modal:
+        return True
+
+    candidates = [
+        modal.locator("button:has(.kd-icon-close)"),
+        modal.locator("[role='button']:has(.kd-icon-close)"),
+        modal.locator("button[class*='close']"),
+        modal.locator("[class*='close'][role='button']"),
+    ]
+    for locator in candidates:
+        close_button = first_visible(locator)
+        if not close_button:
+            continue
+        try:
+            close_button.click()
+            wait_ms(wait_after_ms)
+        except Exception:
+            continue
+        if not visible_global_find_modal(page):
+            return True
+
+    try:
+        page.keyboard.press("Escape")
+        wait_ms(wait_after_ms)
+    except Exception:
+        pass
+
+    return not bool(visible_global_find_modal(page))
 
 
 def select_global_find_result(page: Page, raw_id: str, wait_after_ms: int) -> bool:
@@ -690,7 +768,7 @@ def best_fallback_search_input(page: Page, selectors: Dict[str, Any]) -> Optiona
         for index in range(count):
             item = locator.nth(index)
             try:
-                if not item.is_visible(timeout=200):
+                if not locator_accepts_text_input(item, timeout_ms=200):
                     continue
                 box = item.bounding_box() or {}
                 x = int(box.get("x", 0))
@@ -715,7 +793,7 @@ def best_fallback_search_input(page: Page, selectors: Dict[str, Any]) -> Optiona
         for index in range(count):
             item = locator.nth(index)
             try:
-                if not item.is_visible(timeout=200):
+                if not locator_accepts_text_input(item, timeout_ms=200):
                     continue
                 box = item.bounding_box() or {}
                 x = int(box.get("x", 0))
@@ -740,12 +818,12 @@ def best_fallback_search_input(page: Page, selectors: Dict[str, Any]) -> Optiona
 
 def first_input_by_config(page: Page, selectors: Dict[str, Any]) -> Optional[Locator]:
     for placeholder in selectors.get("search_input_placeholders", []):
-        locator = first_visible(page.get_by_placeholder(placeholder))
+        locator = first_visible_enabled(page.get_by_placeholder(placeholder))
         if locator:
             return locator
 
     for css_selector in selectors.get("search_input_selectors", []):
-        locator = first_visible(page.locator(css_selector))
+        locator = first_visible_enabled(page.locator(css_selector))
         if locator:
             return locator
 
@@ -756,7 +834,7 @@ def first_input_by_config(page: Page, selectors: Dict[str, Any]) -> Optional[Loc
         page.locator("textarea"),
     ]
     for locator in generic_candidates:
-        visible = first_visible(locator)
+        visible = first_visible_enabled(locator)
         if visible:
             return visible
     return None
@@ -802,6 +880,11 @@ def open_search_if_needed_resilient(
         if search_input:
             return search_input
 
+        if visible_global_find_modal(page):
+            if close_global_find_modal(page):
+                wait_ms(300)
+                continue
+
         search_button = top_toolbar_find_button(page)
         if not search_button:
             search_button = first_clickable_button_by_names(
@@ -828,6 +911,12 @@ def open_search_if_needed_resilient(
 
 
 def fill_search_keyword(page: Page, selectors: Dict[str, Any], keyword: str, wait_after_ms: int) -> None:
+    # Persistent worker pages can leave an old, disabled find modal behind.
+    # Always reset the modal before starting a new keyword search.
+    if visible_global_find_modal(page) and not close_global_find_modal(page):
+        page.reload(wait_until="domcontentloaded")
+        wait_for_document_ready(page, selectors)
+
     search_input = open_search_if_needed_resilient(page, selectors)
     search_input.click()
     try:
